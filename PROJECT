@@ -1,0 +1,6 @@
+domain: my.domain
+layout:
+- go.kubebuilder.io/v3
+projectName: k8s-backup-image-registry-controller
+repo: github.com/vkd/k8s-backup-image-registry-controller
+version: "3"
