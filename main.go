@@ -19,6 +19,7 @@ package main
 import (
 	"flag"
 	"os"
+	"time"
 
 	// Import all Kubernetes client auth plugins (e.g. Azure, GCP, OIDC, etc.)
 	// to ensure that exec-entrypoint and run can make use of them.
@@ -30,6 +31,10 @@ import (
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/healthz"
 	"sigs.k8s.io/controller-runtime/pkg/log/zap"
+
+	"github.com/vkd/k8s-backup-image-registry-controller/controllers"
+	"github.com/vkd/k8s-backup-image-registry-controller/pkg/exclude"
+	"github.com/vkd/k8s-backup-image-registry-controller/pkg/registry"
 	//+kubebuilder:scaffold:imports
 )
 
@@ -67,13 +72,53 @@ func main() {
 		Port:                   9443,
 		HealthProbeBindAddress: probeAddr,
 		LeaderElection:         enableLeaderElection,
-		LeaderElectionID:       "698cebda.my.domain",
+		LeaderElectionID:       "k8s-backup-image-registry-controller",
 	})
 	if err != nil {
 		setupLog.Error(err, "unable to start manager")
 		os.Exit(1)
 	}
 
+	filter, err := exclude.NewCommaSeparatedList(os.Getenv("NAMESPACES_EXCLUDE_LIST"))
+	if err != nil {
+		setupLog.Error(err, "Create new namespaces exclude list")
+		os.Exit(1)
+	}
+
+	requeueAfter, err := time.ParseDuration(os.Getenv("REQUEUE_AFTER"))
+	if err != nil {
+		setupLog.Error(err, "Parse time.Duration of 'REQUEUE_AFTER' env value")
+		os.Exit(1)
+	}
+
+	registry := registry.NewBackupRegistry(os.Getenv("REGISTRY_PREFIX"))
+
+	if err = (&controllers.BackupRegistryController{
+		Client: mgr.GetClient(),
+		Scheme: mgr.GetScheme(),
+
+		NamespaceFilter: filter,
+		BackupRegistry:  registry,
+		RequeueAfter:    requeueAfter,
+
+		ReconciledObjectBuilder: controllers.DeploymentObjectBuilder{},
+	}).SetupWithManager(mgr); err != nil {
+		setupLog.Error(err, "unable to create controller", "controller", "Deployment")
+		os.Exit(1)
+	}
+	if err = (&controllers.BackupRegistryController{
+		Client: mgr.GetClient(),
+		Scheme: mgr.GetScheme(),
+
+		NamespaceFilter: filter,
+		BackupRegistry:  registry,
+		RequeueAfter:    requeueAfter,
+
+		ReconciledObjectBuilder: controllers.DaemonSetObjectBuilder{},
+	}).SetupWithManager(mgr); err != nil {
+		setupLog.Error(err, "unable to create controller", "controller", "DaemonSet")
+		os.Exit(1)
+	}
 	//+kubebuilder:scaffold:builder
 
 	if err := mgr.AddHealthzCheck("healthz", healthz.Ping); err != nil {

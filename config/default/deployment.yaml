@@ -1,0 +1,107 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: backup-image-registry
+
+---
+
+apiVersion: v1
+kind: Secret
+metadata:
+  name: docker-configuration
+  namespace: backup-image-registry
+stringData:
+  config.json: |
+    {
+      "auths": {
+        "https://index.docker.io/v1/": {
+          "username": "<username>",
+          "password": "<password>"
+        }
+      }
+    }
+
+---
+
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: k8s-backup-image-registry-controller-configuration
+  namespace: backup-image-registry
+data:
+  NAMESPACES_EXCLUDE_LIST: "kube-system,local-path-storage"
+  REGISTRY_PREFIX: "index.docker.io/<username>"
+
+---
+
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  labels:
+    controller: k8s-backup-image-registry
+  name: k8s-backup-image-registry-controller
+  namespace: backup-image-registry
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      controller: k8s-backup-image-registry
+  template:
+    metadata:
+      labels:
+        controller: k8s-backup-image-registry
+    spec:
+      serviceAccountName: backup-image-registry-sa
+      containers:
+        - name: manager
+          image: index.docker.io/vkdcastle/k8s-backup-image-registry-controller
+          imagePullPolicy: Always
+          args:
+              - --metrics-bind-address=127.0.0.1:8080
+              - --leader-elect
+          resources:
+            limits:
+              cpu: 100m
+              memory: 30Mi
+            requests:
+              cpu: 100m
+              memory: 20Mi
+          env:
+            - name: REQUEUE_AFTER
+              value: "2s"
+            - name: DOCKER_CONFIG
+              value: "/.docker/"
+            - name: NAMESPACES_EXCLUDE_LIST
+              valueFrom:
+                configMapKeyRef:
+                  key: NAMESPACES_EXCLUDE_LIST
+                  name: k8s-backup-image-registry-controller-configuration
+            - name: REGISTRY_PREFIX
+              valueFrom:
+                configMapKeyRef:
+                  key: REGISTRY_PREFIX
+                  name: k8s-backup-image-registry-controller-configuration
+          volumeMounts:
+            - mountPath: /.docker/
+              name: docker-configuration-volume
+      volumes:
+        - name: docker-configuration-volume
+          secret:
+            secretName: docker-configuration
+      terminationGracePeriodSeconds: 10
+
+---
+
+apiVersion: v1
+kind: Service
+metadata:
+  name: k8s-backup-image-registry-controller-service
+  namespace: backup-image-registry
+spec:
+  ports:
+    - name: webhook
+      port: 443
+      protocol: TCP
+      targetPort: 9443
+  selector:
+    controller: k8s-backup-image-registry
